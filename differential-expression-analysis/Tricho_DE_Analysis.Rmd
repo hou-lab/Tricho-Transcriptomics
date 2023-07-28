@@ -1,0 +1,832 @@
+---
+title: "Tricho_DE_Analysis"
+author: "Shengwei Hou"
+date: "12/25/2020"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## change workdir
+```{r, include=FALSE}
+workdir="~/MEGA/02_Tricho_Shi/10_DE_analysis_del-v2"
+setwd(workdir)
+cat("\n==>", as.character(Sys.time()), "setting working directory to ", workdir, "\n")
+```
+
+## Load required libraries
+``` {r, message=FALSE, warning=FALSE, echo=FALSE}
+cat("\n==>", as.character(Sys.time()), "loading required packages ...\n")
+# Install R and required Bioconductor packages if neccesary:
+try(library(BiocManager), install.packages("BiocManager"))
+library(BiocManager)
+#BiocManager::install(c('edgeR', 'DESeq2', 'NOISeq', 'dendextend', 'phyloseq', 'apeglm', 'pheatmap'))
+library("edgeR")
+library("NOISeq")
+library("DESeq2")
+library("dendextend")
+library('phyloseq')
+library('ggplot2')
+library("apeglm")
+library("pheatmap")
+```
+
+## Load functions
+``` {r, message=FALSE, warning=FALSE, echo=FALSE}
+############################
+#  Functions 
+############################
+
+#-----------------------------------------------
+# read in gff file, return a data.frame object
+#-----------------------------------------------
+gffReader <- function(gffFile, nrows = -1) {
+  
+  # print processing info
+  cat("\n==>", as.character(Sys.time()), "reading gff file ", gffFile, "\n")
+
+  # read in gffFile as dataframe using read.table
+  gff = read.table(gffFile, sep="\t", as.is=TRUE, quote="",
+                   header=FALSE, comment.char="#", nrows = nrows,
+                   colClasses=c("character", "character", "character", 
+                                "integer", "integer", "character", "character", 
+                                "character", "character")
+  )
+  
+  cat("\n==>", as.character(Sys.time()), "class of gff is ", class(gff), "\n")
+  
+  # assign column names
+  colnames(gff) = c("seqname", "source", "feature", "start", "end", 
+                    "score", "strand", "frame", "attributes"
+  )
+  
+  # print how many records totally get from this gff file
+  cat("\n==>", as.character(Sys.time()), " found", nrow(gff), "rows with classes:", paste(sapply(gff, class), collapse=", "), "\n")
+
+  # if start and end is NA, stop, stopifnot like assert in Python, all should be True
+  stopifnot(!any(is.na(gff$start)), !any(is.na(gff$end)))
+  
+  cat("\n==>", as.character(Sys.time()),  " found", nrow(gff), "rows after filtration!\n")
+  
+  return(gff)
+}
+
+
+#----------------------------------------------------
+# get attribute item from attributes using identifier
+#----------------------------------------------------
+
+getAttributeField <- function (x, field, attrsep = ";") {
+  
+  # split attributes str based on ";", fixed = TRUE doesnot allow regex, split exactly
+  s = strsplit(x, split = attrsep, fixed = TRUE)
+  
+  # s is a R list obj, use sapply to s, with following anonymous function
+  sapply(s, 
+         function(atts) {
+           
+           # split "ID=cds0" like string
+           a = strsplit(atts, split = "=", fixed = TRUE)
+           
+           # use slice function to slice a by sapply, then match it with field
+           m = match(field, sapply(a, "[", 1))
+           
+           if (!is.na(m)) {
+             rv = a[[m]][2]
+           }
+           else {
+             rv = as.character(NA)
+           }
+           return(rv)
+         }
+  )
+  
+}
+
+
+#-------------------------------------------------------
+# add gene attributes to other non-gene instances, like CDS, rRNA, tRNA, ...
+#-------------------------------------------------------
+
+addGeneAttributesColumn <- function(other_gff, gene_gff){
+  
+  # add one ID column to gene_gff
+  gene_gff[, "ID"] <- rep(NA, nrow(gene_gff))
+  for (i in 1:nrow(gene_gff)){
+    ID <- getAttributeField(x = gene_gff[i,]$attributes, field = "ID")
+    gene_gff[i, "ID"] <- ID
+  }
+  
+  # add one geneAttributes column to other_gff
+  other_gff[, "geneAttributes"] <- rep(x=NA, times=nrow(other_gff))
+  for (i in 1:nrow(other_gff)) 
+  {
+    parent_ID <- getAttributeField(x=other_gff[i, "attributes"], "Parent")
+    if (is.na(parent_ID)) 
+    { 
+      other_gff[i, "geneID"] <- as.character(NA)
+      other_gff[i, "geneAttributes"] <- as.character(NA)
+    } else if (!startsWith(parent_ID, "gene")) {
+      other_gff[i, "geneID"] <- as.character(NA)
+      other_gff[i, "geneAttributes"] <- as.character(NA)
+    } else {
+      other_gff[i, "geneID"] <- parent_ID
+      other_gff[i, "geneAttributes"] <- gene_gff[gene_gff$ID == parent_ID, "attributes"]
+    }
+  }
+  #print(other_gff[i, ])
+  return(other_gff)
+}
+
+```
+
+
+## Input files 
+``` {r}
+## set working directory
+outdir <- file.path(workdir, "output", fsep = "/")
+gff_file <- "~/MEGA/02_Tricho_Shi/genomes/GCA_000014265.1_ASM1426v1_genomic.gff"
+count_file=paste(workdir, "Tricho_featureCounts_result.tab", sep="/")
+metadata_file=paste(workdir, "metadata.tsv", sep="/")
+if (workdir != getwd()) system(paste("mkdir -p", workdir, sep=" "))
+setwd(workdir)
+if (!dir.exists(outdir)) {
+    dir.create(outdir)
+} else {
+    cat("\n==>", as.character(Sys.time()),  "Output directory ", outdir, "exists, will use it.\n")
+}
+prefix ="Tricho"
+prefix <- paste(outdir, prefix, sep="/")
+```
+
+
+## GFF annotation file preprocessing 
+``` {r}
+
+# read in gff file
+gff <- gffReader(gff_file)
+#View(gff)
+
+# get gene_gff
+gene_gff <- gff[gff$feature =="gene", ]
+#fix(gene_gff)
+#View(gene_gff)
+
+# only keep features that are not "gene", 
+otherFeatures <- unique(gff[, 3])
+#otherFeatures
+otherFeatures <- otherFeatures[-which(otherFeatures %in% c("gene", "region", "exon"))]
+#otherFeatures
+
+# get other_gff
+other_gff <- data.frame(seqname=character(0), source=character(0), feature=character(0), 
+                        start=integer(0), end=integer(0), score=character(0), 
+                        strand=character(0), frame=character(0), atrributes=character(0))
+for (i in 1:length(otherFeatures)){
+  #print(otherFeatures[i])
+  other_gff <- rbind(other_gff, gff[gff$feature == otherFeatures[i], ])
+}
+#fix(other_gff)
+
+# bind geneAttributesColumn and geneID to other_gff
+other_gff <- addGeneAttributesColumn(other_gff, gene_gff)
+locus_tag <- getAttributeField(other_gff[, "geneAttributes"], "locus_tag", attrsep = ";")
+other_gff <- cbind(other_gff, locus_tag=locus_tag)
+#head(other_gff)
+#View(other_gff)
+
+# extract product, make annotations
+product <- getAttributeField(other_gff[, "attributes"], "product", attrsep = ";")
+dbxref <- getAttributeField(other_gff[, "attributes"], "Dbxref", attrsep = ";")
+note <- getAttributeField(other_gff[, "attributes"], "Note", attrsep = ";")
+annotations <- other_gff[, c("geneID", "locus_tag", "seqname", "feature", "start", "end", "strand", "attributes")]
+annotations <- cbind(annotations, product, dbxref, note)
+# reorganize the order of product column
+annotations <- annotations[, c("geneID", "locus_tag", "feature", "start", "end", "strand", "seqname", "product", "dbxref", "note", "attributes")]
+#View(annotations)
+#head(annotations)
+cat("\n==>", as.character(Sys.time()), "final annotations look like: \n")
+head(annotations, 2)
+```
+
+## Count table preprocessing
+```{r}
+rawCounts <- read.table(file = count_file, header = T, sep = "\t", as.is = T, stringsAsFactors = F)
+#fix(rawCounts)
+#head(rawCounts)
+#ncol(rawCounts)
+
+# get counts table
+rawTable <- rawCounts[, 7:ncol(rawCounts)]
+rownames(rawTable) <- rawCounts[, 1]
+#head(rawTable)
+counts <- sapply(rawTable, as.numeric)
+rownames(counts) <- rownames(rawTable)
+cat("\n==>", as.character(Sys.time()), " raw count table looks like: \n")
+head(counts, 2)
+```
+
+### filter out weakly expressed genes and rRNAs/tRNAs
+```{r}
+# calculate count per million
+cpms <- cpm(counts)
+#head(cpms)
+cat("\n==>", as.character(Sys.time()), " Dimension before filtering: ", dim(cpms), "\n")
+
+# keep rows meet requirements: at least 1 column has cpm more than 1, rowSums more than 0.5*ncol
+keep <- rowSums(cpms > 1) >=1 & rowSums(cpms) >= ncol(cpms)*0.5
+counts <- counts[keep, ]
+cat("\n==>", as.character(Sys.time()), " Dimension after filtering weakly expressed genes: ", dim(counts), "\n")
+
+# remove rows belongs to rRNA and tRNA
+#View(other_gff)
+#remove <- other_gff[other_gff$feature == "rRNA" | other_gff$feature == "tRNA", "geneID"]
+remove <- other_gff[other_gff$feature == "rRNA", "geneID"]
+#remove
+
+counts <- counts[!row.names(counts)%in%remove, ]
+#head(counts)
+#dim(counts)
+cat("\n==>", as.character(Sys.time()), " Dimension after removing weakly expressed genes and rRNA/tRNA: ", dim(counts))
+#View(counts)
+```
+
+
+### read in metadata
+
+```{r}
+cat("\n==>", as.character(Sys.time()), " making metatable ...\n")
+# build a meta table, giving all experimental factors
+#colnames(counts)
+
+# read in metadata
+metadata <- read.table(metadata_file, header = TRUE, as.is = TRUE, stringsAsFactors = FALSE, row.names = 1)
+if(!all.equal(rownames(metadata), colnames(counts))) {
+  stop("sample names in metadata didn't match column names in count table!\n")
+}
+cat("\n==>", as.character(Sys.time()), " metadata looks like: \n")
+head(metadata,7)
+```
+
+### get normalized counts 
+
+```{r}
+cat("\n==>", as.character(Sys.time()), " running edgeR TMM normalization ...\n")
+# make DGEList
+cat("\n==>", as.character(Sys.time()), " making DEGList with counts and metadata ...\n")
+d <- DGEList(counts=counts, group=as.factor(metadata$treatment))
+#d
+cat("\n==>", as.character(Sys.time()), " calculating normalization factors using TMM method ...\n")
+d <- calcNormFactors(d, method = "TMM")
+#d
+cat("\n==>", as.character(Sys.time()), " calculating count per million (cpm) using normalized DGEList object ...\n")
+cpms<- cpm(d, normalized.lib.sizes=TRUE)
+#head(cpms)
+cat("\n==>", as.character(Sys.time()), " formating cpm counts to scientific format with 2 digits ...\n")
+cpms.formatted <- format(cpms, digits=2, scientific = F)
+colnames(cpms.formatted) <- paste(colnames(cpms.formatted), "_CPM", sep = "")
+cat("\n==>", as.character(Sys.time()), " formated cpm looks like this:\n")
+head(cpms.formatted, 2)
+
+# compute log2CPM
+cat("\n==>", as.character(Sys.time()), " computing log2 transformed cpms ...\n")
+cpms.log <- log2(cpms+1)
+cpms.log.formatted <- format(cpms.log, digits=2, scientific = F)
+colnames(cpms.log.formatted) <- paste(colnames(cpms), "_logCPM", sep = "")
+cat("\n==> formated logCPM looks like this:\n")
+head(cpms.log.formatted, 2)
+
+cat("\n==>", as.character(Sys.time()), " writing out cpms ...\n")
+# annotate the cpm table, then write it out with annotations
+rawCounts.selected <- rawTable[rownames(cpms), ]
+#head(rawCounts.selected)
+colnames(rawCounts.selected) <- paste(colnames(rawCounts.selected), "_RAW", sep = "")
+#head(rawCounts.selected)
+rawCount_cpms <- cbind(rawCounts.selected, cpms.formatted, cpms.log.formatted)
+#head(rawCount_cpms)
+annotations.selected <- annotations[annotations$locus_tag%in%rownames(rawCount_cpms), ]
+#View(annotations.selected)
+rownames(annotations.selected) <- annotations.selected$locus_tag
+anno_cols <- c('locus_tag', 'geneID', 'feature', 'start', 'end', 'strand', 'seqname', 'product', 'note', 'dbxref')
+annotations.selected <- annotations.selected[rownames(cpms.formatted), anno_cols]
+#head(annotations.selected)
+rawCount_cpms.anno <- cbind(rawCount_cpms, annotations.selected)
+#head(rawCount_cpms.anno)
+write.table(rawCount_cpms, file=paste(prefix, "_featureCounts_CPM.tsv", sep=""), sep="\t", row.names = T, col.names=NA)
+write.table(rawCount_cpms.anno, file=paste(prefix, "_featureCounts_CPM_anno.tsv", sep=""), sep="\t", row.names = T, col.names=NA)
+
+#pdf(file = paste(prefix, "_featureCounts_top1000_logCPM.pdf", sep="")) 
+pheatmap(cpms.log[1:1000, ], cluster_cols = F)
+#dev.off()
+```
+
+
+## Differential Expression Analysis
+
+```{r}
+
+# Calculate TPM
+# michael's version
+# https://support.bioconductor.org/p/91218/
+tpm3 <- function(counts,len) {
+  x <- counts/len
+  return(t(t(x)*1e6/colSums(x)))
+}
+```
+
+
+### construct DESeqDataSet object
+```{r}
+library(DESeq2)
+library(ggplot2)
+
+cat("\n==>", as.character(Sys.time()), " importing counts and metadata into DESeq: \n")
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = metadata,
+                              design= ~ treatment)
+```
+
+### check read number per sample
+```{r}
+cat("\n==>", as.character(Sys.time()), " total read number per sample are ... \n")
+total_read_no <- as.data.frame(colSums(assay(dds)))
+colnames(total_read_no) <- c("TotalReads")
+total_read_no <- cbind(total_read_no, metadata[rownames(total_read_no), ])
+total_read_no$SampleName <- rownames(total_read_no)
+total_read_no
+
+my_theme1 <- theme_bw() + 
+  theme(panel.background = element_blank(), 
+        axis.line = element_line(colour = "black"), 
+        text = element_text(size = 16),
+        axis.title.x = element_text(size=18, color="black"), 
+        axis.title.y = element_text(size=18, color="black"), 
+        axis.text.x = element_text(angle = 0, hjust = 1, color="black"), 
+        panel.grid.minor.x = element_line(colour = "grey", size=0.2, linetype = 'dashed'), 
+        panel.grid.major.x = element_line(colour = "grey", size=0.2),
+        panel.grid.minor.y = element_line(colour = "grey", size = 0.2, linetype = 'dashed'),
+        panel.grid.major.y = element_line(colour = "grey", size=0.2),
+        legend.position = "bottom", 
+        legend.text=element_text(size=10), 
+        legend.key.size = unit(1,"line"), 
+        plot.margin=unit(c(1,1,1,1),"cm")
+       ) 
+
+ggplot(total_read_no, aes(x = SampleName, y = TotalReads, fill = factor(color))) + 
+  geom_bar(stat="identity", width=0.5) +
+  geom_abline(slope=0, intercept=3e6, col="red",lty=2) +
+  scale_fill_manual(values = c("forestgreen", "red", "yellow3")) + 
+  labs(y = "Total Read Number", x = "Sample") + my_theme1 +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1, size=10), axis.text.y = element_text(size=10))
+ggsave(filename=paste(prefix, "_sample_read_number_barplot.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+```
+
+### variance stablizing transformation and regularized logarithm (rlog) transformation
+
+```{r}
+cat("\n==>", as.character(Sys.time()), " running vst transformation ... \n")
+vsd <- vst(dds, blind=FALSE)
+vst_count <- assay(vsd)
+cat("\n==>", as.character(Sys.time()), " running rlog transformation ... \n")
+rld <- rlog(dds, blind=FALSE)
+rlog_count <- assay(rld)
+cat("\n==>", as.character(Sys.time()), " vst transformed counts look like: \n")
+head(vst_count, 3)
+cat("\n==>", as.character(Sys.time()), " rlog transformed counts look like: \n")
+head(rlog_count, 3)
+# write vst and rlog counts
+write.table(vst_count, file=paste(prefix, "_vst_count.tsv", sep=""), sep="\t", row.names = T, col.names=NA)
+write.table(rlog_count, file=paste(prefix, "_rlog_count.tsv", sep=""), sep="\t", row.names = T, col.names=NA)
+# boxplot of vst and rlog transformed counts
+
+# plot normalized count
+library("patchwork")
+library("tidyverse")
+logCount <- as.data.frame(log10(assay(dds)+1)) %>% rownames_to_column %>% 
+      gather(key="SampleName", value="Counts", -rowname)
+p_logCount <- ggplot(logCount, aes(x=SampleName, y=Counts)) + 
+    geom_boxplot(outlier.colour="black", outlier.shape=1, outlier.size=1)
+vst_count.long <- as.data.frame(vst_count) %>%  rownames_to_column %>% 
+      gather(key="SampleName", value="Counts", -rowname)
+p_vst <- ggplot(vst_count.long, aes(x=SampleName, y=Counts)) + 
+    geom_boxplot(outlier.colour="black", outlier.shape=1, outlier.size=1)
+rlog_count.long <- as.data.frame(rlog_count) %>%  rownames_to_column %>% 
+      gather(key="SampleName", value="Counts", -rowname)
+p_rlog <- ggplot(rlog_count.long, aes(x=SampleName, y=Counts)) + 
+    geom_boxplot(outlier.colour="black", outlier.shape=1, outlier.size=1)
+p <- p_logCount + p_vst + p_rlog
+p
+ggsave(filename=paste(prefix, "_sample_vst_rlog_norm_boxplot.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+```
+
+### Exploratory Analysis
+
+#### PCA using `FactoMineR`
+```{r}
+library(FactoMineR)
+library(factoextra)
+df_pca <- PCA(t(rlog_count), graph = F)
+fviz_pca_ind(X = df_pca, axes = c(1, 2), 
+             geom=c("point", "text"),
+             col.ind = metadata$treatment,
+             legend.title = "Treatment")
+```
+
+#### PCA using `DESeq2`
+```{r}
+# use ggrepel to label the dots
+library(ggrepel)
+
+# PCA based on vsd
+#pdf(file = paste(prefix, "_sample_vst_PCA.pdf", sep="")) 
+pcaData <- plotPCA(vsd, intgroup=c("treatment", "day"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2)) +
+  geom_point(aes(color=treatment, shape=as.character(metadata$pch)), size=3) +
+  coord_fixed() +
+  ggtitle("PCA based on VST counts") + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) + 
+  geom_text_repel(aes(label=rownames(metadata)), size=3) +
+  #geom_text(aes(label=rownames(metadata), hjust=0.5, vjust=-0.4)) + 
+  scale_color_manual(values=unique(as.character(metadata$color)[order(metadata$treatment)])) + 
+  scale_shape_manual(values=unique(as.numeric(metadata$pch)[order(metadata$pch)])) +
+  theme_bw() +
+  theme(legend.position="bottom")
+ggsave(filename=paste(prefix, "_sample_vst_PCA.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+#dev.off()
+
+# PCA based on rlog
+#pdf(file = paste(prefix, "_sample_rlog_PCA.pdf", sep="")) 
+pcaData <- plotPCA(rld, intgroup=c("treatment", "day"), returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+ggplot(pcaData, aes(PC1, PC2)) +
+  geom_point(aes(color=treatment, shape=as.character(metadata$pch)), size=3) +
+  coord_fixed() +
+  ggtitle("PCA based on rlog counts") + 
+  xlab(paste0("PC1: ",percentVar[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar[2],"% variance")) +
+  geom_text_repel(aes(label=rownames(metadata)), size=3) +
+  #geom_text(aes(label=rownames(metadata), hjust=0.5, vjust=-0.4)) +
+  scale_color_manual(values=unique(as.character(metadata$color)[order(metadata$treatment)])) + 
+  scale_shape_manual(values=unique(as.numeric(metadata$pch)[order(metadata$pch)])) +  
+  theme_bw() +
+  theme(legend.position="bottom")
+ggsave(filename=paste(prefix, "_sample_rlog_PCA.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+#dev.off()
+```
+
+
+#### sample heatmap
+```{r}
+library(RColorBrewer)
+library(pheatmap)
+
+# clustering using Euclidean distance based on vst/rlog counts
+vst_dist <- dist(t(vst_count))
+vst_dist_mat <- as.matrix(vst_dist)
+rownames(vst_dist_mat) <- paste(colData(dds)$treatment_day, colData(dds)$replicate, sep = "_")
+colnames(vst_dist_mat) <- colData(dds)$Name
+rlog_dist <- dist(t(rlog_count))
+rlog_dist_mat <- as.matrix(rlog_dist)
+rownames(rlog_dist_mat) <- paste(colData(dds)$treatment_day, colData(dds)$replicate, sep = "_")
+colnames(rlog_dist_mat) <- colData(dds)$Name
+
+# plot heatmap
+par(mfrow=c(2, 1))
+colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
+pheatmap(vst_dist_mat, col=colors, main = "vst Euclidean distance")
+pheatmap(rlog_dist_mat, col=colors, main = "rlog Euclidean distance")
+```
+
+#### sample dendrogram
+```{r}
+# clustering using Euclidean distance based on vst counts
+vst_dist <- dist(t(vst_count))
+# the agglomeration method can be "ward.D", "ward.D2", "single", "complete", 
+# "average" (= UPGMA), "mcquitty" (= WPGMA), "median" (= WPGMC) or "centroid" (= UPGMC)
+vst_clust <- hclust(vst_dist, method="ward.D2")
+vst_dend <- as.dendrogram(vst_clust, hang=0.1)
+vst_dend_cols <- as.character(metadata$color[order.dendrogram(vst_dend)])
+labels_colors(vst_dend) <- vst_dend_cols
+# rotate branches based on leaf order
+leaf_order <- c('HFe_d5_rep1', 'HFe_d5_rep2', 'HFe_d5_rep3', 
+                'MFe_d5_rep2', 'MFe_d5_rep1', 
+                'LFe_d5_rep1', 'LFe_d5_rep2')
+if(!all.equal(leaf_order, unique(leaf_order))) {
+  stop("sample names should be unique and should contain all the leaf names!\n")
+}
+vst_dend <- rotate(vst_dend, order=leaf_order)
+# save to pdf
+#pdf(file = paste(prefix, "_sample_vst_dendrogram.pdf", sep="")) 
+plot(vst_dend, ylab="Euclidean Distance based on VST counts")
+#dev.off()
+
+# clustering using Euclidean distance based on rlog counts
+rlog_dist <- dist(t(rlog_count))
+rlog_clust <- hclust(rlog_dist, method="ward.D2")
+rlog_dend <- as.dendrogram(rlog_clust, hang=0.1)
+rlog_dend_cols <- as.character(metadata$color[order.dendrogram(rlog_dend)])
+labels_colors(rlog_dend) <- rlog_dend_cols
+# rotate branches based on leaf order
+leaf_order <- c('HFe_d5_rep1', 'HFe_d5_rep2', 'HFe_d5_rep3', 
+                'MFe_d5_rep2', 'MFe_d5_rep1', 
+                'LFe_d5_rep1', 'LFe_d5_rep2')
+if(!all.equal(leaf_order, unique(leaf_order))) {
+  stop("sample names should be unique and should contain all the leaf names!\n")
+}
+rlog_dend <- rotate(rlog_dend, order=leaf_order)
+#pdf(file = paste(prefix, "_sample_rlog_dendrogram.pdf", sep="")) 
+plot(rlog_dend, ylab="Euclidean Distance based on rlog counts")
+#dev.off()
+
+plot(vst_dend, ylab="Euclidean Distance based on VST counts")
+plot(rlog_dend, ylab="Euclidean Distance based on rlog counts")
+```
+
+#### PCoA using `PhyloSeq`
+```{r}
+# making our phyloseq object with transformed table from vst count
+vst_count_phy <- otu_table(vst_count, taxa_are_rows=T)
+metadata_phy <- sample_data(metadata)
+vst_phyloseq <- phyloseq(vst_count_phy, metadata_phy)
+vst_pcoa <- ordinate(vst_phyloseq, method="MDS", distance="euclidean")
+# eigen_vals allows us to scale the axes according to their magnitude of separating apart the samples
+eigen_vals <- vst_pcoa$values$Eigenvalues 
+plot_ordination(vst_phyloseq, vst_pcoa) + 
+  geom_point(aes(color=treatment, shape=as.character(metadata$pch)), size=3) + 
+  labs(col="treatment") +
+  geom_text_repel(aes(label=rownames(metadata)), size=3) +
+  coord_fixed(sqrt(eigen_vals[2]/eigen_vals[1])) + ggtitle("PCoA based on VST counts") + 
+  scale_color_manual(values=unique(as.character(metadata$color)[order(metadata$treatment)])) + 
+  scale_shape_manual(values=unique(as.numeric(metadata$pch)[order(metadata$pch)])) +  
+  theme_bw() +
+  theme(legend.position="bottom")
+ggsave(filename=paste(prefix, "_sample_vst_PCoA.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+
+# making our phyloseq object with transformed table from rlog count
+rlog_count_phy <- otu_table(rlog_count, taxa_are_rows=T)
+metadata_phy <- sample_data(metadata)
+rlog_phyloseq <- phyloseq(rlog_count_phy, metadata_phy)
+rlog_pcoa <- ordinate(rlog_phyloseq, method="MDS", distance="euclidean")
+eigen_vals <- rlog_pcoa$values$Eigenvalues
+plot_ordination(rlog_phyloseq, rlog_pcoa) + 
+  geom_point(aes(color=treatment, shape=as.character(metadata$pch)), size=3) + 
+  labs(col="treatment") +
+  geom_text_repel(aes(label=rownames(metadata)), size=3) +
+  coord_fixed(sqrt(eigen_vals[2]/eigen_vals[1])) + ggtitle("PCoA based on rlog counts") + 
+  scale_color_manual(values=unique(as.character(metadata$color)[order(metadata$treatment)])) + 
+  scale_shape_manual(values=unique(as.numeric(metadata$pch)[order(metadata$pch)])) +  
+  theme_bw() +
+  theme(legend.position="bottom")
+ggsave(filename=paste(prefix, "_sample_rlog_PCoA.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+```
+
+
+###  DE based on treatment
+```{r}
+# function to write DE tables
+write_DE_tables <- function(contrast, suffix_str){
+  contrast <- contrast[order(contrast$padj, decreasing=F),]
+  anno <- rawCount_cpms.anno[rownames(contrast), ]
+  contrast.anno <- cbind(contrast, anno)
+  write.table(contrast, file=paste(prefix, suffix_str, ".tsv", sep=""), sep="\t", row.names = T, col.names=NA)
+  write.table(contrast.anno, file=paste(prefix, suffix_str, "_anno.tsv", sep=""), sep="\t", row.names = T, col.names=NA)
+  write.table(contrast.anno[contrast$log2FoldChange>0, ], file=paste(prefix, suffix_str, "_anno_up.tsv", sep=""), sep="\t", row.names = T, col.names=NA)
+  write.table(contrast.anno[contrast$log2FoldChange<=0, ], file=paste(prefix, suffix_str, "_anno_dn.tsv", sep=""), sep="\t", row.names = T, col.names=NA)
+}
+
+# construct DESeqDataSet object
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = metadata,
+                              design= ~ treatment)
+
+# set the baseline treatment as the "LFe" treatment
+dds$treatment <- relevel(dds$treatment, ref = "LFe")
+
+# run deseq standard analysis
+design(dds) <- ~treatment
+dds.treatment <- DESeq(dds)
+# extract size factors
+size_facctors <- sizeFactors(dds.treatment)
+size_facctors
+
+# get per level baseMean
+baseMeanPerLvl <- sapply(levels(dds$treatment), 
+                         function(lvl) rowMeans(counts(dds.treatment,normalized=TRUE)[,dds$treatment == lvl]))
+colnames(baseMeanPerLvl) <- sapply(levels(dds$treatment), function(lvl) paste0("baseMean_", lvl))
+head(baseMeanPerLvl)
+
+
+# pulling out our results table, 
+# we specify the object, the p-value we are going to use to filter our results, 
+# and what contrast we want to consider by first naming the column, then the two groups we care about 
+
+# ------------------
+# HFe vs LFe samples
+# ------------------
+HFe_vs_LFe_contrast <- results(dds.treatment, alpha=0.05, contrast=c("treatment", "HFe", "LFe"))
+head(HFe_vs_LFe_contrast)
+
+# combine res with baseMeanPerLvl
+HFe_vs_LFe_contrast.lvl <- cbind(HFe_vs_LFe_contrast['baseMean'], 
+                                 baseMeanPerLvl, 
+                                 HFe_vs_LFe_contrast[, 2:ncol(HFe_vs_LFe_contrast)])
+# check the results
+head(HFe_vs_LFe_contrast.lvl)
+
+# write 
+write_DE_tables(HFe_vs_LFe_contrast, "_HFe_vs_LFe_contrast")
+write_DE_tables(HFe_vs_LFe_contrast.lvl, "_HFe_vs_LFe_contrast_lvl")
+
+# ------------------
+# MFe vs LFe samples
+# ------------------
+MFe_vs_LFe_contrast <- results(dds.treatment, alpha=0.05, contrast=c("treatment", "MFe", "LFe"))
+
+# combine res with baseMeanPerLvl
+MFe_vs_LFe_contrast.lvl <- cbind(MFe_vs_LFe_contrast['baseMean'], 
+                                 baseMeanPerLvl, 
+                                 MFe_vs_LFe_contrast[, 2:ncol(MFe_vs_LFe_contrast)])
+# check the results
+head(MFe_vs_LFe_contrast.lvl)
+
+# write 
+write_DE_tables(MFe_vs_LFe_contrast, "_MFe_vs_LFe_contrast")
+write_DE_tables(MFe_vs_LFe_contrast, "_MFe_vs_LFe_contrast_lvl")
+
+
+# ------------------
+# HFe vs MFe samples
+# ------------------
+HFe_vs_MFe_contrast <- results(dds.treatment, alpha=0.05, contrast=c("treatment", "HFe", "MFe"))
+
+# combine res with baseMeanPerLvl
+HFe_vs_MFe_contrast.lvl <- cbind(HFe_vs_MFe_contrast['baseMean'], 
+                                 baseMeanPerLvl, 
+                                 HFe_vs_MFe_contrast[, 2:ncol(HFe_vs_MFe_contrast)])
+# check the results
+head(HFe_vs_MFe_contrast.lvl)
+
+# write
+write_DE_tables(HFe_vs_MFe_contrast, "_HFe_vs_MFe_contrast")
+write_DE_tables(HFe_vs_MFe_contrast, "_HFe_vs_MFe_contrast_lvl")
+
+
+# -------
+# summary
+# -------
+# we can get a glimpse at what this table currently holds with the summary command
+summary(HFe_vs_LFe_contrast)
+summary(MFe_vs_LFe_contrast)
+summary(HFe_vs_MFe_contrast)
+
+# make a stat table based on the summary
+DE_stats <- "
+contrast up  down
+HFe_vs_LFe  181 127
+HFe_vs_MFe  33  46
+MFe_vs_LFe  156 59
+"
+de_stat_df <- read.table(text=DE_stats, header=T)
+de_stat_df
+mat <- de_stat_df[, c("up", "down")]
+rownames(mat) <- de_stat_df$contrast
+# save to pdf
+#pdf(file = paste(prefix, "_DESeq2_DE_Overview.pdf", sep="")) 
+pheatmap(mat=mat, angle_col = 0, fontsize_col = 10, fontsize_row = 10)
+#dev.off()
+```
+
+
+### Euler Diagrame of DE genes across treatment comparison
+```{r}
+# get gene names
+get_de_gene_names <- function(DESeq_contrast, padj_cutoff=0.01, log2FC_cutoff=1) {
+  
+    library(tidyverse)
+    genes.sig_up <- as.data.frame(DESeq_contrast) %>% 
+    rownames_to_column('locus_tag') %>%
+    filter(!is.na(padj)) %>% 
+    filter(padj <= padj_cutoff, log2FoldChange >= log2FC_cutoff) %>%
+    column_to_rownames('locus_tag') %>% rownames()
+    
+    genes.sig_dn <- as.data.frame(DESeq_contrast) %>% 
+      rownames_to_column('locus_tag') %>%
+      filter(!is.na(padj)) %>% 
+      filter(padj <= padj_cutoff, log2FoldChange <= -1*log2FC_cutoff) %>%
+      column_to_rownames('locus_tag') %>% rownames()    
+  
+    return(list(genes.sig_up, genes.sig_dn))
+    
+}
+
+
+padj_cutoff = 0.05
+logFC_cutoff = 0.585
+
+# HFe_vs_LFe sig
+HFe_vs_LFe_sig <- get_de_gene_names(HFe_vs_LFe_contrast, 
+                                    padj_cutoff=padj_cutoff, 
+                                    log2FC_cutoff=logFC_cutoff)
+HFe_vs_LFe_sig.up <- HFe_vs_LFe_sig[[1]]
+HFe_vs_LFe_sig.dn <- HFe_vs_LFe_sig[[2]]
+
+# HFe_vs_MFe sig
+HFe_vs_MFe_sig <- get_de_gene_names(HFe_vs_MFe_contrast, 
+                                    padj_cutoff=padj_cutoff, 
+                                    log2FC_cutoff=logFC_cutoff)
+HFe_vs_MFe_sig.up <- HFe_vs_MFe_sig[[1]]
+HFe_vs_MFe_sig.dn <- HFe_vs_MFe_sig[[2]]
+
+# MFe_vs_LFe sig
+MFe_vs_LFe_sig <- get_de_gene_names(MFe_vs_LFe_contrast, 
+                                    padj_cutoff=padj_cutoff, 
+                                    log2FC_cutoff=logFC_cutoff)
+MFe_vs_LFe_sig.up <- MFe_vs_LFe_sig[[1]]
+MFe_vs_LFe_sig.dn <- MFe_vs_LFe_sig[[2]]
+
+
+#BiocManager::install('eulerr')
+library(eulerr)
+up.list <- list(
+  HFe_vs_LFe = HFe_vs_LFe_sig.up, 
+  HFe_vs_MFe = HFe_vs_MFe_sig.up, 
+  MFe_vs_LFe = MFe_vs_LFe_sig.up)
+dn.list <- list(
+  HFe_vs_LFe = HFe_vs_LFe_sig.dn, 
+  HFe_vs_MFe = HFe_vs_MFe_sig.dn, 
+  MFe_vs_LFe = MFe_vs_LFe_sig.dn)
+
+#pdf(file = paste(prefix, "_Eule_diagram_padj0.05_logFC0.585_up.pdf", sep="")) 
+plot(euler(up.list, shape = "ellipse"), main="Euler diagram of up regulated genes", 
+     fills = c("limegreen", "dodgerblue", "darkgoldenrod1"),
+     edges = FALSE,
+     fontsize = 8,
+     quantities = TRUE, 
+     legend=TRUE)
+#dev.off()
+#pdf(file = paste(prefix, "_Eule_diagram_padj0.05_logFC0.585_dn.pdf", sep="")) 
+plot(euler(dn.list, shape = "ellipse"), main="Euler diagram of down regulated genes", 
+     fills = c("limegreen", "dodgerblue", "darkgoldenrod1"),
+     edges = FALSE,
+     fontsize = 8,
+     quantities = TRUE, 
+     legend=TRUE)
+#dev.off()
+```
+
+
+
+### plot the read counts for selected genes
+```{r}
+# visualizing top gene (based on adj. p-value)
+topGene <- rownames(HFe_vs_LFe_contrast)[which.min(HFe_vs_LFe_contrast$padj)]
+topGene
+data <- plotCounts(dds.treatment, gene=topGene, intgroup=c("treatment"), returnData = T)
+data$treatment <- factor(data$treatment, levels=c("LFe", "MFe", "HFe"))
+ggplot(data, aes(x=treatment, y=count, fill=treatment)) +
+  scale_y_log10() + theme_bw() +
+  geom_violin(alpha=0.3) + 
+  geom_jitter(aes(color=treatment), shape=16, position=position_jitter(0.2)) +
+  geom_smooth(method = "lm", se = TRUE) +
+  ggtitle(topGene)
+```
+  
+  
+```{r}
+# visualizing top gene (based on adj. p-value)
+topGene <- rownames(HFe_vs_LFe_contrast)[which.min(HFe_vs_LFe_contrast$padj)]
+topGene
+data <- plotCounts(dds.treatment, gene=topGene, intgroup=c("treatment"), returnData = T)
+data$treatment <- factor(data$treatment, levels=c("LFe", "MFe", "HFe"))
+data$replicate <- factor(colData(dds.treatment)$replicate, levels=c(1, 2, 3))
+ggplot(data, aes(x=treatment, y=count, fill=treatment)) +
+  scale_y_log10() + theme_bw() +
+  geom_violin(alpha=0.3) + 
+  geom_jitter(aes(color=treatment), shape=16, position=position_jitter(0.2)) +
+  geom_smooth(method = "lm", se = TRUE) +
+  ggtitle(topGene)
+
+# boxplot of differnet groups
+library(ggpubr)
+# specify the comparisons you want
+my_comparisons <- list(c("HFe", "LFe"), c("HFe", "MFe"), c("MFe", "LFe"))
+p <- ggboxplot(data, x = "treatment", y = "count",
+          color = "treatment", palette = "jco",
+          add = "jitter") + 
+     rotate_x_text(angle = 45) +
+     geom_hline(yintercept = mean(data$count), linetype=2) + # Add horizontal line at base mean
+     stat_compare_means(method="anova", label.y=50) + # Add global p-value
+     stat_compare_means(comparisons=my_comparisons, method="t.test", ref.group = "LFe") # Add pairwise comparisons p-value
+p
+```
+
+
+```{r}
+sessionInfo()
+```

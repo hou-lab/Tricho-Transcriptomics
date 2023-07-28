@@ -1,0 +1,8 @@
+sample_ID	day	replicate	treatment	treatment_day	color	pch
+HFe_d5_rep1	5	1	HFe	HFe_d5	forestgreen	16
+HFe_d5_rep2	5	2	HFe	HFe_d5	forestgreen	16
+HFe_d5_rep3	5	3	HFe	HFe_d5	forestgreen	16
+LFe_d5_rep1	5	1	LFe	LFe_d5	red	16
+LFe_d5_rep2	5	2	LFe	LFe_d5	red	16
+MFe_d5_rep1	5	1	MFe	MFe_d5	yellow3	16
+MFe_d5_rep2	5	2	MFe	MFe_d5	yellow3	16

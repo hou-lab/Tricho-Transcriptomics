@@ -1,7 +1,7 @@
 ---
 title: "Tricho_DE_Analysis"
 author: "Shengwei Hou"
-date: "12/25/2020"
+date: "04/24/2024"
 output:
   html_document: default
   pdf_document: default
@@ -13,7 +13,8 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## change workdir
 ```{r, include=FALSE}
-workdir="~/MEGA/02_Tricho_Shi/10_DE_analysis_del-v2"
+#workdir="~/MEGA/02_Tricho_Shi/10_DE_analysis_del-v2"
+workdir="/Users/shengwei/GitHub/Tricho-Transcriptomics/differential-expression-analysis"
 setwd(workdir)
 cat("\n==>", as.character(Sys.time()), "setting working directory to ", workdir, "\n")
 ```
@@ -24,7 +25,7 @@ cat("\n==>", as.character(Sys.time()), "loading required packages ...\n")
 # Install R and required Bioconductor packages if neccesary:
 try(library(BiocManager), install.packages("BiocManager"))
 library(BiocManager)
-#BiocManager::install(c('edgeR', 'DESeq2', 'NOISeq', 'dendextend', 'phyloseq', 'apeglm', 'pheatmap'))
+#BiocManager::install(c('edgeR', 'DESeq2', 'NOISeq', 'dendextend', 'phyloseq', 'apeglm', 'pheatmap', 'carData'))
 library("edgeR")
 library("NOISeq")
 library("DESeq2")
@@ -33,6 +34,9 @@ library('phyloseq')
 library('ggplot2')
 library("apeglm")
 library("pheatmap")
+library("patchwork")
+library("tidyverse")
+library("ggpubr")
 ```
 
 ## Load functions
@@ -149,8 +153,8 @@ addGeneAttributesColumn <- function(other_gff, gene_gff){
 ``` {r}
 ## set working directory
 outdir <- file.path(workdir, "output", fsep = "/")
-gff_file <- "~/MEGA/02_Tricho_Shi/genomes/GCA_000014265.1_ASM1426v1_genomic.gff"
-count_file=paste(workdir, "Tricho_featureCounts_result.tab", sep="/")
+gff_file <- file.path(workdir, "../genomes/GCA_000014265.1_ASM1426v1_genomic.gff", fsep = "/")
+count_file=paste(workdir, "Tricho_featureCounts_result.tsv", sep="/")
 metadata_file=paste(workdir, "metadata.tsv", sep="/")
 if (workdir != getwd()) system(paste("mkdir -p", workdir, sep=" "))
 setwd(workdir)
@@ -272,7 +276,7 @@ cat("\n==>", as.character(Sys.time()), " metadata looks like: \n")
 head(metadata,7)
 ```
 
-### get normalized counts 
+### get edgeR TMM normalized CPM and log2CPM counts 
 
 ```{r}
 cat("\n==>", as.character(Sys.time()), " running edgeR TMM normalization ...\n")
@@ -294,7 +298,7 @@ head(cpms.formatted, 2)
 
 # compute log2CPM
 cat("\n==>", as.character(Sys.time()), " computing log2 transformed cpms ...\n")
-cpms.log <- log2(cpms+1)
+cpms.log <- log2(cpms+0.01)
 cpms.log.formatted <- format(cpms.log, digits=2, scientific = F)
 colnames(cpms.log.formatted) <- paste(colnames(cpms), "_logCPM", sep = "")
 cat("\n==> formated logCPM looks like this:\n")
@@ -320,24 +324,12 @@ write.table(rawCount_cpms, file=paste(prefix, "_featureCounts_CPM.tsv", sep=""),
 write.table(rawCount_cpms.anno, file=paste(prefix, "_featureCounts_CPM_anno.tsv", sep=""), sep="\t", row.names = T, col.names=NA)
 
 #pdf(file = paste(prefix, "_featureCounts_top1000_logCPM.pdf", sep="")) 
-pheatmap(cpms.log[1:1000, ], cluster_cols = F)
+pheatmap(cpms.log[1:500, ], cluster_cols = F)
 #dev.off()
 ```
 
 
 ## Differential Expression Analysis
-
-```{r}
-
-# Calculate TPM
-# michael's version
-# https://support.bioconductor.org/p/91218/
-tpm3 <- function(counts,len) {
-  x <- counts/len
-  return(t(t(x)*1e6/colSums(x)))
-}
-```
-
 
 ### construct DESeqDataSet object
 ```{r}
@@ -366,23 +358,24 @@ my_theme1 <- theme_bw() +
         axis.title.x = element_text(size=18, color="black"), 
         axis.title.y = element_text(size=18, color="black"), 
         axis.text.x = element_text(angle = 0, hjust = 1, color="black"), 
-        panel.grid.minor.x = element_line(colour = "grey", size=0.2, linetype = 'dashed'), 
-        panel.grid.major.x = element_line(colour = "grey", size=0.2),
-        panel.grid.minor.y = element_line(colour = "grey", size = 0.2, linetype = 'dashed'),
-        panel.grid.major.y = element_line(colour = "grey", size=0.2),
+        panel.grid.minor.x = element_line(colour = "grey", linewidth=0.2, linetype = 'dashed'), 
+        panel.grid.major.x = element_line(colour = "grey", linewidth=0.2),
+        panel.grid.minor.y = element_line(colour = "grey", linewidth = 0.2, linetype = 'dashed'),
+        panel.grid.major.y = element_line(colour = "grey", linewidth=0.2),
         legend.position = "bottom", 
         legend.text=element_text(size=10), 
         legend.key.size = unit(1,"line"), 
         plot.margin=unit(c(1,1,1,1),"cm")
        ) 
 
-ggplot(total_read_no, aes(x = SampleName, y = TotalReads, fill = factor(color))) + 
+p_reads <- ggplot(total_read_no, aes(x = SampleName, y = TotalReads, fill = factor(color))) + 
   geom_bar(stat="identity", width=0.5) +
   geom_abline(slope=0, intercept=3e6, col="red",lty=2) +
-  scale_fill_manual(values = c("forestgreen", "red", "yellow3")) + 
+  scale_fill_manual(values = c("forestgreen", "red", "yellow3"), labels = c("HFe", "LFe", "MFe")) + 
   labs(y = "Total Read Number", x = "Sample") + my_theme1 +
   theme(axis.text.x = element_text(angle = 60, hjust = 1, size=10), axis.text.y = element_text(size=10))
 ggsave(filename=paste(prefix, "_sample_read_number_barplot.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+p_reads
 ```
 
 ### variance stablizing transformation and regularized logarithm (rlog) transformation
@@ -404,37 +397,28 @@ write.table(rlog_count, file=paste(prefix, "_rlog_count.tsv", sep=""), sep="\t",
 # boxplot of vst and rlog transformed counts
 
 # plot normalized count
-library("patchwork")
-library("tidyverse")
 logCount <- as.data.frame(log10(assay(dds)+1)) %>% rownames_to_column %>% 
       gather(key="SampleName", value="Counts", -rowname)
 p_logCount <- ggplot(logCount, aes(x=SampleName, y=Counts)) + 
-    geom_boxplot(outlier.colour="black", outlier.shape=1, outlier.size=1)
+    geom_boxplot(outlier.colour="black", outlier.shape=1, outlier.size=1) + 
+    labs(y = "log counts", x = "Sample") + theme(axis.text.x = element_text(angle = 60, hjust = 1, size=10))
 vst_count.long <- as.data.frame(vst_count) %>%  rownames_to_column %>% 
       gather(key="SampleName", value="Counts", -rowname)
 p_vst <- ggplot(vst_count.long, aes(x=SampleName, y=Counts)) + 
-    geom_boxplot(outlier.colour="black", outlier.shape=1, outlier.size=1)
+    geom_boxplot(outlier.colour="black", outlier.shape=1, outlier.size=1) + 
+    labs(y = "vst counts", x = "Sample")  + theme(axis.text.x = element_text(angle = 60, hjust = 1, size=10))
 rlog_count.long <- as.data.frame(rlog_count) %>%  rownames_to_column %>% 
       gather(key="SampleName", value="Counts", -rowname)
 p_rlog <- ggplot(rlog_count.long, aes(x=SampleName, y=Counts)) + 
-    geom_boxplot(outlier.colour="black", outlier.shape=1, outlier.size=1)
-p <- p_logCount + p_vst + p_rlog
-p
+    geom_boxplot(outlier.colour="black", outlier.shape=1, outlier.size=1) + 
+    labs(y = "rlog counts", x = "Sample")  + theme(axis.text.x = element_text(angle = 60, hjust = 1, size=10))
+
+p_counts <- p_logCount + p_vst + p_rlog
 ggsave(filename=paste(prefix, "_sample_vst_rlog_norm_boxplot.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+p_counts
 ```
 
 ### Exploratory Analysis
-
-#### PCA using `FactoMineR`
-```{r}
-library(FactoMineR)
-library(factoextra)
-df_pca <- PCA(t(rlog_count), graph = F)
-fviz_pca_ind(X = df_pca, axes = c(1, 2), 
-             geom=c("point", "text"),
-             col.ind = metadata$treatment,
-             legend.title = "Treatment")
-```
 
 #### PCA using `DESeq2`
 ```{r}
@@ -442,10 +426,9 @@ fviz_pca_ind(X = df_pca, axes = c(1, 2),
 library(ggrepel)
 
 # PCA based on vsd
-#pdf(file = paste(prefix, "_sample_vst_PCA.pdf", sep="")) 
 pcaData <- plotPCA(vsd, intgroup=c("treatment", "day"), returnData=TRUE)
 percentVar <- round(100 * attr(pcaData, "percentVar"))
-ggplot(pcaData, aes(PC1, PC2)) +
+p_vst_pca <- ggplot(pcaData, aes(PC1, PC2)) +
   geom_point(aes(color=treatment, shape=as.character(metadata$pch)), size=3) +
   coord_fixed() +
   ggtitle("PCA based on VST counts") + 
@@ -457,14 +440,11 @@ ggplot(pcaData, aes(PC1, PC2)) +
   scale_shape_manual(values=unique(as.numeric(metadata$pch)[order(metadata$pch)])) +
   theme_bw() +
   theme(legend.position="bottom")
-ggsave(filename=paste(prefix, "_sample_vst_PCA.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
-#dev.off()
 
 # PCA based on rlog
-#pdf(file = paste(prefix, "_sample_rlog_PCA.pdf", sep="")) 
 pcaData <- plotPCA(rld, intgroup=c("treatment", "day"), returnData=TRUE)
 percentVar <- round(100 * attr(pcaData, "percentVar"))
-ggplot(pcaData, aes(PC1, PC2)) +
+p_rlog_pca <- ggplot(pcaData, aes(PC1, PC2)) +
   geom_point(aes(color=treatment, shape=as.character(metadata$pch)), size=3) +
   coord_fixed() +
   ggtitle("PCA based on rlog counts") + 
@@ -476,34 +456,13 @@ ggplot(pcaData, aes(PC1, PC2)) +
   scale_shape_manual(values=unique(as.numeric(metadata$pch)[order(metadata$pch)])) +  
   theme_bw() +
   theme(legend.position="bottom")
-ggsave(filename=paste(prefix, "_sample_rlog_PCA.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
-#dev.off()
+
+p_pca <- p_vst_pca + p_rlog_pca
+ggsave(filename=paste(prefix, "_sample_vst_rlog_PCA.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+p_pca
 ```
 
-
-#### sample heatmap
-```{r}
-library(RColorBrewer)
-library(pheatmap)
-
-# clustering using Euclidean distance based on vst/rlog counts
-vst_dist <- dist(t(vst_count))
-vst_dist_mat <- as.matrix(vst_dist)
-rownames(vst_dist_mat) <- paste(colData(dds)$treatment_day, colData(dds)$replicate, sep = "_")
-colnames(vst_dist_mat) <- colData(dds)$Name
-rlog_dist <- dist(t(rlog_count))
-rlog_dist_mat <- as.matrix(rlog_dist)
-rownames(rlog_dist_mat) <- paste(colData(dds)$treatment_day, colData(dds)$replicate, sep = "_")
-colnames(rlog_dist_mat) <- colData(dds)$Name
-
-# plot heatmap
-par(mfrow=c(2, 1))
-colors <- colorRampPalette(rev(brewer.pal(9, "Blues")))(255)
-pheatmap(vst_dist_mat, col=colors, main = "vst Euclidean distance")
-pheatmap(rlog_dist_mat, col=colors, main = "rlog Euclidean distance")
-```
-
-#### sample dendrogram
+#### sample dendrogram based on vst counts
 ```{r}
 # clustering using Euclidean distance based on vst counts
 vst_dist <- dist(t(vst_count))
@@ -513,42 +472,28 @@ vst_clust <- hclust(vst_dist, method="ward.D2")
 vst_dend <- as.dendrogram(vst_clust, hang=0.1)
 vst_dend_cols <- as.character(metadata$color[order.dendrogram(vst_dend)])
 labels_colors(vst_dend) <- vst_dend_cols
-# rotate branches based on leaf order
-leaf_order <- c('HFe_d5_rep1', 'HFe_d5_rep2', 'HFe_d5_rep3', 
-                'MFe_d5_rep2', 'MFe_d5_rep1', 
-                'LFe_d5_rep1', 'LFe_d5_rep2')
-if(!all.equal(leaf_order, unique(leaf_order))) {
-  stop("sample names should be unique and should contain all the leaf names!\n")
-}
-vst_dend <- rotate(vst_dend, order=leaf_order)
+
 # save to pdf
 #pdf(file = paste(prefix, "_sample_vst_dendrogram.pdf", sep="")) 
 plot(vst_dend, ylab="Euclidean Distance based on VST counts")
 #dev.off()
-
+```
+#### sample dendrogram based on rlog counts
+```{r}
 # clustering using Euclidean distance based on rlog counts
 rlog_dist <- dist(t(rlog_count))
 rlog_clust <- hclust(rlog_dist, method="ward.D2")
 rlog_dend <- as.dendrogram(rlog_clust, hang=0.1)
 rlog_dend_cols <- as.character(metadata$color[order.dendrogram(rlog_dend)])
 labels_colors(rlog_dend) <- rlog_dend_cols
-# rotate branches based on leaf order
-leaf_order <- c('HFe_d5_rep1', 'HFe_d5_rep2', 'HFe_d5_rep3', 
-                'MFe_d5_rep2', 'MFe_d5_rep1', 
-                'LFe_d5_rep1', 'LFe_d5_rep2')
-if(!all.equal(leaf_order, unique(leaf_order))) {
-  stop("sample names should be unique and should contain all the leaf names!\n")
-}
-rlog_dend <- rotate(rlog_dend, order=leaf_order)
+
 #pdf(file = paste(prefix, "_sample_rlog_dendrogram.pdf", sep="")) 
 plot(rlog_dend, ylab="Euclidean Distance based on rlog counts")
 #dev.off()
-
-plot(vst_dend, ylab="Euclidean Distance based on VST counts")
-plot(rlog_dend, ylab="Euclidean Distance based on rlog counts")
 ```
 
-#### PCoA using `PhyloSeq`
+
+#### PCoA using `PhyloSeq` with vst counts
 ```{r}
 # making our phyloseq object with transformed table from vst count
 vst_count_phy <- otu_table(vst_count, taxa_are_rows=T)
@@ -557,7 +502,7 @@ vst_phyloseq <- phyloseq(vst_count_phy, metadata_phy)
 vst_pcoa <- ordinate(vst_phyloseq, method="MDS", distance="euclidean")
 # eigen_vals allows us to scale the axes according to their magnitude of separating apart the samples
 eigen_vals <- vst_pcoa$values$Eigenvalues 
-plot_ordination(vst_phyloseq, vst_pcoa) + 
+p_vst_pcoa <- plot_ordination(vst_phyloseq, vst_pcoa) + 
   geom_point(aes(color=treatment, shape=as.character(metadata$pch)), size=3) + 
   labs(col="treatment") +
   geom_text_repel(aes(label=rownames(metadata)), size=3) +
@@ -574,7 +519,7 @@ metadata_phy <- sample_data(metadata)
 rlog_phyloseq <- phyloseq(rlog_count_phy, metadata_phy)
 rlog_pcoa <- ordinate(rlog_phyloseq, method="MDS", distance="euclidean")
 eigen_vals <- rlog_pcoa$values$Eigenvalues
-plot_ordination(rlog_phyloseq, rlog_pcoa) + 
+p_rlog_pcoa <- plot_ordination(rlog_phyloseq, rlog_pcoa) + 
   geom_point(aes(color=treatment, shape=as.character(metadata$pch)), size=3) + 
   labs(col="treatment") +
   geom_text_repel(aes(label=rownames(metadata)), size=3) +
@@ -583,7 +528,10 @@ plot_ordination(rlog_phyloseq, rlog_pcoa) +
   scale_shape_manual(values=unique(as.numeric(metadata$pch)[order(metadata$pch)])) +  
   theme_bw() +
   theme(legend.position="bottom")
-ggsave(filename=paste(prefix, "_sample_rlog_PCoA.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+
+p_pcoa <- p_vst_pcoa + p_rlog_pcoa
+ggsave(filename=paste(prefix, "_sample_vst_rlog_PCoA.pdf", sep=""), device="pdf", width=297, height=210, units="mm" )
+p_pcoa
 ```
 
 
@@ -611,20 +559,22 @@ dds$treatment <- relevel(dds$treatment, ref = "LFe")
 # run deseq standard analysis
 design(dds) <- ~treatment
 dds.treatment <- DESeq(dds)
+
 # extract size factors
 size_facctors <- sizeFactors(dds.treatment)
 size_facctors
 
+# Dispersion plot 
+head(dispersions(dds.treatment))
+plotDispEsts(dds.treatment, cex=0.5, ymin=1e-05)
+```
+
+```{r}
 # get per level baseMean
 baseMeanPerLvl <- sapply(levels(dds$treatment), 
                          function(lvl) rowMeans(counts(dds.treatment,normalized=TRUE)[,dds$treatment == lvl]))
 colnames(baseMeanPerLvl) <- sapply(levels(dds$treatment), function(lvl) paste0("baseMean_", lvl))
 head(baseMeanPerLvl)
-
-
-# pulling out our results table, 
-# we specify the object, the p-value we are going to use to filter our results, 
-# and what contrast we want to consider by first naming the column, then the two groups we care about 
 
 # ------------------
 # HFe vs LFe samples
@@ -643,6 +593,44 @@ head(HFe_vs_LFe_contrast.lvl)
 write_DE_tables(HFe_vs_LFe_contrast, "_HFe_vs_LFe_contrast")
 write_DE_tables(HFe_vs_LFe_contrast.lvl, "_HFe_vs_LFe_contrast_lvl")
 
+# plot MA
+par(mar = c(4, 4, .1, .1))
+plotMA(HFe_vs_LFe_contrast, ylim=c(-2,2), main="HFe_vs_LFe", colSig = "blue", cex=.8)
+```
+
+**Filtering criteria**
+The goal of independent filtering is to filter out those tests from the procedure that have no, or little chance of showing significant evidence, without even looking at their test statistic.
+
+Genes with very low counts are not likely to see significant differences typically due to high dispersion. For example, we can plot the −log10(p-values) from all genes over the normalized mean counts.
+```{r}
+plot(HFe_vs_LFe_contrast$baseMean+1, -log10(HFe_vs_LFe_contrast$pvalue), main="HFe_vs_LFe",
+     log="x", xlab="mean of normalized counts",
+     ylab=expression(-log[10](pvalue)),
+     ylim=c(0,30),
+     cex=.4, col=rgb(0,0,0,.3))
+```
+
+```{r}
+# p-value histogram
+# the p value histogram below shows how the filtering ameliorates the multiple testing problem,  
+# by removing a background set of hypotheses whose p values are distributed more or less uniformly in [0,1].
+cat("\n==>", as.character(Sys.time()), "Filtering criteria:", metadata(HFe_vs_LFe_contrast)$filterThreshold,  "\n")
+use <- HFe_vs_LFe_contrast$baseMean > metadata(HFe_vs_LFe_contrast)$filterThreshold
+h1 <- hist(HFe_vs_LFe_contrast$pvalue[!use], breaks=0:50/50, plot=FALSE)
+h2 <- hist(HFe_vs_LFe_contrast$pvalue[use], breaks=0:50/50, plot=FALSE)
+colori <- c(`do not pass`="khaki", `pass`="powderblue")
+
+# Histogram of p values for all tests. 
+# The area shaded in blue indicates the subset of those that pass the filtering, the area in khaki those that do not pass
+{
+  barplot(height = rbind(h1$counts, h2$counts), beside = FALSE, col = colori, space = 0, main = "HFe_vs_LFe", ylab="frequency") 
+  text(x = c(0, length(h1$counts)), y = 0, label = paste(c(0,1)), adj = c(0.5,1.7), xpd=NA) 
+  legend("topright", fill=rev(colori), legend=rev(names(colori)))
+}
+```
+
+
+```{r}
 # ------------------
 # MFe vs LFe samples
 # ------------------
@@ -659,7 +647,40 @@ head(MFe_vs_LFe_contrast.lvl)
 write_DE_tables(MFe_vs_LFe_contrast, "_MFe_vs_LFe_contrast")
 write_DE_tables(MFe_vs_LFe_contrast, "_MFe_vs_LFe_contrast_lvl")
 
+# plot MA
+par(mar = c(4, 4, .1, .1))
+plotMA(MFe_vs_LFe_contrast, ylim=c(-2,2), main="MFe_vs_LFe", colSig = "blue", cex=.8)
+```
 
+```{r}
+plot(MFe_vs_LFe_contrast$baseMean+1, -log10(MFe_vs_LFe_contrast$pvalue), main="MFe_vs_LFe",
+     log="x", xlab="mean of normalized counts",
+     ylab=expression(-log[10](pvalue)),
+     ylim=c(0,30),
+     cex=.4, col=rgb(0,0,0,.3))
+```
+
+```{r}
+# p-value histogram
+# the p value histogram below shows how the filtering ameliorates the multiple testing problem,  
+# by removing a background set of hypotheses whose p values are distributed more or less uniformly in [0,1].
+cat("\n==>", as.character(Sys.time()), "Filtering criteria:", metadata(MFe_vs_LFe_contrast)$filterThreshold,  "\n")
+use <- MFe_vs_LFe_contrast$baseMean > metadata(MFe_vs_LFe_contrast)$filterThreshold
+h1 <- hist(MFe_vs_LFe_contrast$pvalue[!use], breaks=0:50/50, plot=FALSE)
+h2 <- hist(MFe_vs_LFe_contrast$pvalue[use], breaks=0:50/50, plot=FALSE)
+colori <- c(`do not pass`="khaki", `pass`="powderblue")
+
+# Histogram of p values for all tests. 
+# The area shaded in blue indicates the subset of those that pass the filtering, the area in khaki those that do not pass
+{
+  barplot(height = rbind(h1$counts, h2$counts), beside = FALSE, col = colori, space = 0, main = "MFe_vs_LFe", ylab="frequency") 
+  text(x = c(0, length(h1$counts)), y = 0, label = paste(c(0,1)), adj = c(0.5,1.7), xpd=NA) 
+  legend("topright", fill=rev(colori), legend=rev(names(colori)))
+}
+```
+
+
+```{r}
 # ------------------
 # HFe vs MFe samples
 # ------------------
@@ -676,7 +697,41 @@ head(HFe_vs_MFe_contrast.lvl)
 write_DE_tables(HFe_vs_MFe_contrast, "_HFe_vs_MFe_contrast")
 write_DE_tables(HFe_vs_MFe_contrast, "_HFe_vs_MFe_contrast_lvl")
 
+# plot MA
+par(mar = c(4, 4, .1, .1))
+plotMA(HFe_vs_MFe_contrast, ylim=c(-2,2), main="HFe_vs_MFe", colSig = "blue", cex=.8)
+```
 
+```{r}
+plot(HFe_vs_MFe_contrast$baseMean+1, -log10(HFe_vs_MFe_contrast$pvalue), main="HFe_vs_MFe",
+     log="x", xlab="mean of normalized counts",
+     ylab=expression(-log[10](pvalue)),
+     ylim=c(0,30),
+     cex=.4, col=rgb(0,0,0,.3))
+```
+
+```{r}
+# p-value histogram
+# the p value histogram below shows how the filtering ameliorates the multiple testing problem,  
+# by removing a background set of hypotheses whose p values are distributed more or less uniformly in [0,1].
+cat("\n==>", as.character(Sys.time()), "Filtering criteria:", metadata(HFe_vs_MFe_contrast)$filterThreshold,  "\n")
+use <- HFe_vs_MFe_contrast$baseMean > metadata(HFe_vs_MFe_contrast)$filterThreshold
+h1 <- hist(HFe_vs_MFe_contrast$pvalue[!use], breaks=0:50/50, plot=FALSE)
+h2 <- hist(HFe_vs_MFe_contrast$pvalue[use], breaks=0:50/50, plot=FALSE)
+colori <- c(`do not pass`="khaki", `pass`="powderblue")
+
+# Histogram of p values for all tests. 
+# The area shaded in blue indicates the subset of those that pass the filtering, the area in khaki those that do not pass
+{
+  barplot(height = rbind(h1$counts, h2$counts), beside = FALSE, col = colori, space = 0, main = "HFe_vs_MFe", ylab="frequency") 
+  text(x = c(0, length(h1$counts)), y = 0, label = paste(c(0,1)), adj = c(0.5,1.7), xpd=NA) 
+  legend("topright", fill=rev(colori), legend=rev(names(colori)))
+}
+```
+
+
+### summarize DE genes across treatment comparison
+```{r}
 # -------
 # summary
 # -------
@@ -761,7 +816,10 @@ dn.list <- list(
   HFe_vs_LFe = HFe_vs_LFe_sig.dn, 
   HFe_vs_MFe = HFe_vs_MFe_sig.dn, 
   MFe_vs_LFe = MFe_vs_LFe_sig.dn)
+```
 
+#### Euler Diagrame of up-regulated DE genes across treatment comparison
+```{r}
 #pdf(file = paste(prefix, "_Eule_diagram_padj0.05_logFC0.585_up.pdf", sep="")) 
 plot(euler(up.list, shape = "ellipse"), main="Euler diagram of up regulated genes", 
      fills = c("limegreen", "dodgerblue", "darkgoldenrod1"),
@@ -770,6 +828,10 @@ plot(euler(up.list, shape = "ellipse"), main="Euler diagram of up regulated gene
      quantities = TRUE, 
      legend=TRUE)
 #dev.off()
+```
+
+#### Euler Diagrame of down-regulated DE genes across treatment comparison
+```{r}
 #pdf(file = paste(prefix, "_Eule_diagram_padj0.05_logFC0.585_dn.pdf", sep="")) 
 plot(euler(dn.list, shape = "ellipse"), main="Euler diagram of down regulated genes", 
      fills = c("limegreen", "dodgerblue", "darkgoldenrod1"),
@@ -780,24 +842,7 @@ plot(euler(dn.list, shape = "ellipse"), main="Euler diagram of down regulated ge
 #dev.off()
 ```
 
-
-
-### plot the read counts for selected genes
-```{r}
-# visualizing top gene (based on adj. p-value)
-topGene <- rownames(HFe_vs_LFe_contrast)[which.min(HFe_vs_LFe_contrast$padj)]
-topGene
-data <- plotCounts(dds.treatment, gene=topGene, intgroup=c("treatment"), returnData = T)
-data$treatment <- factor(data$treatment, levels=c("LFe", "MFe", "HFe"))
-ggplot(data, aes(x=treatment, y=count, fill=treatment)) +
-  scale_y_log10() + theme_bw() +
-  geom_violin(alpha=0.3) + 
-  geom_jitter(aes(color=treatment), shape=16, position=position_jitter(0.2)) +
-  geom_smooth(method = "lm", se = TRUE) +
-  ggtitle(topGene)
-```
-  
-  
+### plot the read counts for selected DE genes 
 ```{r}
 # visualizing top gene (based on adj. p-value)
 topGene <- rownames(HFe_vs_LFe_contrast)[which.min(HFe_vs_LFe_contrast$padj)]
@@ -813,17 +858,16 @@ ggplot(data, aes(x=treatment, y=count, fill=treatment)) +
   ggtitle(topGene)
 
 # boxplot of differnet groups
-library(ggpubr)
 # specify the comparisons you want
 my_comparisons <- list(c("HFe", "LFe"), c("HFe", "MFe"), c("MFe", "LFe"))
-p <- ggboxplot(data, x = "treatment", y = "count",
+p_gene <- ggpubr::ggboxplot(data, x = "treatment", y = "count",
           color = "treatment", palette = "jco",
           add = "jitter") + 
      rotate_x_text(angle = 45) +
      geom_hline(yintercept = mean(data$count), linetype=2) + # Add horizontal line at base mean
      stat_compare_means(method="anova", label.y=50) + # Add global p-value
      stat_compare_means(comparisons=my_comparisons, method="t.test", ref.group = "LFe") # Add pairwise comparisons p-value
-p
+p_gene
 ```
 
 

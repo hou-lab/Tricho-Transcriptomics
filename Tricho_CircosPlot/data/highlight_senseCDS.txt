@@ -1,0 +1,34 @@
+# File to draw the CDSs (coding regions) in the sense DNA 
+# strand beneath of the Ideogram as Highlight
+#
+# The first column have the ID of “chromosome”, 
+# second: start, third: end (coordinate of the CDSs) and color.
+#
+# (The whole file cover all regions until position 3157603).
+#
+# Save this file like: Highlight_senceCDS.txt
+chr1 3701 4156 blue
+chr1 4241 5554 blue
+chr1 5541 6056 blue
+chr1 6180 6473 blue
+chr1 10990 12639 blue
+chr1 12632 15466 blue
+chr1 15459 16283 blue
+chr1 17509 17823 blue
+chr1 24078 24404 blue
+chr1 31909 34476 blue
+chr1 34599 36752 blue
+chr1 36761 37294 blue
+chr1 37385 38491 blue
+chr1 38628 39146 blue
+chr1 42959 44161 blue
+chr1 52027 52242 blue
+chr1 52414 53472 blue
+chr1 55502 56053 blue
+chr1 56567 57208 blue
+chr1 57210 57767 blue
+chr1 58450 58776 blue
+# …
+# …
+
+

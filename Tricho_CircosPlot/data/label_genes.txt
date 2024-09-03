@@ -1,0 +1,25 @@
+# Draw some names of target genes as Tex Labes
+#
+# 
+# We can draw some names of target genes, placing them to 
+# inner of the Ideogram, each coordinate of the genes into the 
+# chromosome is required. Normally the .gbk or .gff annotation 
+# files have everything you need to build this kind of files.
+# 
+# Save this file like: Label_genes.txt
+
+chr1 3698 6621 mnhE1_1
+chr1 6621 8521 aioA_1
+chr1 8521 10451 rpmA
+chr1 75819 77035 tsaD_1
+chr1 1254307 1290110 pip
+chr1 1299386 1319219 ytrA
+chr1 1331312 1332337 dinJ_2
+chr1 1509606 1511341 luxQ_8
+chr1 1527837 1529786 yrbG_1
+chr1 2058556 2070939 hoxH
+chr1 2088380 2113008 ttgR
+chr1 2088380 2113008 mdtA_2
+chr1 2088380 2113008 czcA_2
+# …
+# …

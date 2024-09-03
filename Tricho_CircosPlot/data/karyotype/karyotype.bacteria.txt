@@ -1,0 +1,19 @@
+# If you have a Draft genome with many fragments (hundreds or thousands!),
+# you can simulated them as bands. The first row have the directions to 
+# draw the ideogram and the others identified the bands. 
+# Circos only recognizes “chr” or “band”. Then, we need to specify an ID, 
+# level, start-end and color.
+#
+# Save this into a .txt file, like: bacteria_genome_karyotype.txt
+
+chr – chr1 1 0 3157603 black
+band chr1 band1 band1 0 33698 black
+band chr1 band2 band2 33699 556621 white
+band chr1 band3 band3 556622 838521 black
+band chr1 band4 band4 838522 1210451 white
+band chr1 band5 band5 1210452 1417493 black
+band chr1 band6 band6 1417494 1821952 white
+band chr1 band7 band7 1821953 2024028 black
+band chr1 band8 band8 2024029 2525390 white
+band chr1 band9 band9 2525391 2987073 black
+band chr1 band10 band10 2987074 3157603 white
